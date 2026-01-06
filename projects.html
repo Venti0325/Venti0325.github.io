@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>项目 | 我的个人网站</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
+           margin: 0; background: #f6f7fb; color: #111; }
+    .wrap { max-width: 900px; margin: 0 auto; padding: 48px 20px; }
+    .card { background: #fff; border-radius: 16px; padding: 24px; box-shadow: 0 6px 20px rgba(0,0,0,.06); }
+    .nav a { margin-right: 14px; text-decoration: none; color: #2563eb; font-weight: 600; }
+    .proj { border: 1px solid #eee; border-radius: 14px; padding: 16px; margin-top: 12px; }
+    .muted { color: #666; font-size: 14px; }
+    .links a { margin-right: 10px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <div class="nav">
+        <a href="index.html">首页</a>
+        <a href="projects.html">项目</a>
+        <a href="about.html">关于我</a>
+      </div>
+
+      <h1 style="margin: 14px 0 6px;">项目</h1>
+      <p class="muted">每个项目尽量写清楚：你做了什么、用什么技术、解决了什么问题。</p>
+
+      <div class="proj">
+        <h2 style="margin:0 0 6px;">OSLab：XXX</h2>
+        <div class="muted">关键词：C · 内核 · 虚拟内存 · 文件系统</div>
+        <p>亮点：比如实现了 COW / pipes / semaphore 等，写 2-3 条就行。</p>
+        <div class="links">
+          <a href="https://github.com/你的用户名/你的仓库">代码</a>
+          <a href="#">演示/截图</a>
+        </div>
+      </div>
+
+      <div class="proj">
+        <h2 style="margin:0 0 6px;">编译器后端：LLVM IR → RISC-V</h2>
+        <div class="muted">关键词：编译原理 · IR · 代码生成 · 寄存器分配</div>
+        <p>亮点：比如支持的指令/优化，遇到的难点（调用约定、栈帧等）。</p>
+        <div class="links">
+          <a href="#">代码</a>
+          <a href="#">文档</a>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</body>
+</html>
