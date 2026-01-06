@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1" />
+  <title>躲避陨石 | 小网页游戏</title>
+  <style>
+    :root { color-scheme: light; }
+    body{
+      margin:0; height:100vh; display:grid; place-items:center;
+      background:#0b1020; color:#e9eefc;
+      font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,"PingFang SC","Microsoft YaHei",sans-serif;
+      overflow:hidden;
+    }
+    .wrap{ width:min(920px, 94vw); }
+    .top{
+      display:flex; align-items:center; justify-content:space-between; gap:10px;
+      margin:10px 0 12px;
+    }
+    .title{ font-weight:800; letter-spacing:.2px; }
+    .hint{ opacity:.75; font-size:14px; }
+    canvas{
+      width:100%; aspect-ratio: 16/9;
+      background: radial-gradient(1200px 600px at 30% 10%, #18224a 0%, #0b1020 55%, #070a14 100%);
+      border-radius:16px;
+      box-shadow: 0 18px 60px rgba(0,0,0,.55);
+      touch-action:none; /* 允许我们接管触控拖动 */
+    }
+    .bar{ display:flex; gap:10px; flex-wrap:wrap; margin-top:12px; }
+    button{
+      border:0; border-radius:12px; padding:10px 12px;
+      background:#e9eefc; color:#0b1020; font-weight:700; cursor:pointer;
+    }
+    button:hover{ filter:brightness(.95); }
+    a{ color:#9cc0ff; text-decoration:none; font-weight:700; }
+    a:hover{ text-decoration:underline; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="top">
+      <div class="title">☄️ 躲避陨石</div>
+      <div class="hint">键盘：← → / A D ｜手机：拖动飞船 ｜空格：暂停</div>
+    </div>
+
+    <canvas id="c" width="960" height="540"></canvas>
+
+    <div class="bar">
+      <button id="restart">重新开始</button>
+      <button id="pause">暂停/继续</button>
+      <a href="index.html">← 回到主页</a>
+    </div>
+  </div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+
+  // ---------- 游戏状态 ----------
+  let running = true;
+  let gameOver = false;
+  let score = 0;
+  let best = Number(localStorage.getItem('best_score') || 0);
+
+  // 玩家（飞船）
+  const player = {
+    x: canvas.width / 2,
+    y: canvas.height * 0.84,
+    r: 16,
+    vx: 0,
+    speed: 520, // 像素/秒
+  };
+
+  // 陨石列表
+  const rocks = [];
+  let spawnTimer = 0;
+  let spawnInterval = 0.75; // 初始刷怪间隔（秒），会逐渐变快
+
+  // 输入
+  const keys = { left:false, right:false };
+
+  // 让画面在不同分辨率也“清晰”
+  function fitDPR(){
+    const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+    const rect = canvas.getBoundingClientRect();
+    const w = Math.round(rect.width * dpr);
+    const h = Math.round(rect.height * dpr);
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w;
+      canvas.height = h;
+      // 重新定位玩家到合理位置
+      player.y = canvas.height * 0.84;
+      player.x = Math.min(player.x, canvas.width - player.r - 10);
+    }
+  }
+  // 初次适配
+  requestAnimationFrame(() => { fitDPR(); });
+
+  // ---------- 工具 ----------
+  const rand = (a,b)=> a + Math.random()*(b-a);
+  const clamp = (v,a,b)=> Math.max(a, Math.min(b, v));
+  function dist2(ax,ay,bx,by){ const dx=ax-bx, dy=ay-by; return dx*dx+dy*dy; }
+
+  // ---------- 生成陨石 ----------
+  function spawnRock() {
+    const r = rand(10, 28);
+    const x = rand(r + 10, canvas.width - r - 10);
+    const y = -r - 10;
+    const vy = rand(160, 320) + score*0.8; // 分数越高越快
+    const vx = rand(-60, 60);
+    rocks.push({ x,y,r,vx,vy,spin: rand(-2,2), a: rand(0, Math.PI*2) });
+  }
+
+  // ---------- 渲染 ----------
+  function drawBG(){
+    // 星空点点
+    ctx.save();
+    ctx.globalAlpha = 0.25;
+    for(let i=0;i<60;i++){
+      const x = (i*197) % canvas.width;
+      const y = (i*389) % canvas.height;
+      const s = (i%3)+1;
+      ctx.fillStyle = '#cfe0ff';
+      ctx.fillRect(x, y, s, s);
+    }
+    ctx.restore();
+  }
+
+  function drawPlayer(){
+    // 飞船：一个小三角+圆形舱
+    ctx.save();
+    ctx.translate(player.x, player.y);
+
+    // 推进尾焰（小动画）
+    const flame = 8 + Math.sin(perfNow/80)*3;
+    ctx.fillStyle = '#ffcc66';
+    ctx.beginPath();
+    ctx.moveTo(-8, 12);
+    ctx.lineTo(0, 12+flame);
+    ctx.lineTo(8, 12);
+    ctx.closePath();
+    ctx.fill();
+
+    // 舱体
+    ctx.fillStyle = '#e9eefc';
+    ctx.beginPath();
+    ctx.arc(0, 0, player.r, 0, Math.PI*2);
+    ctx.fill();
+
+    // 前鼻锥
+    ctx.fillStyle = '#9cc0ff';
+    ctx.beginPath();
+    ctx.moveTo(0, -player.r-12);
+    ctx.lineTo(-12, 4);
+    ctx.lineTo(12, 4);
+    ctx.closePath();
+    ctx.fill();
+
+    // 舷窗
+    ctx.fillStyle = '#0b1020';
+    ctx.beginPath();
+    ctx.arc(0, -3, 5, 0, Math.PI*2);
+    ctx.fill();
+
+    ctx.restore();
+  }
+
+  function drawRock(rock){
+    ctx.save();
+    ctx.translate(rock.x, rock.y);
+    ctx.rotate(rock.a);
+
+    ctx.fillStyle = '#8b93a9';
+    ctx.beginPath();
+    // 画一个不规则多边形，像陨石
+    const n = 8;
+    for(let i=0;i<n;i++){
+      const ang = (i/n)*Math.PI*2;
+      const rr = rock.r * rand(0.75, 1.15);
+      const px = Math.cos(ang)*rr;
+      const py = Math.sin(ang)*rr;
+      if(i===0) ctx.moveTo(px,py); else ctx.lineTo(px,py);
+    }
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.globalAlpha = 0.25;
+    ctx.strokeStyle = '#e9eefc';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    ctx.restore();
+  }
+
+  function drawHUD(){
+    ctx.save();
+    ctx.fillStyle = 'rgba(233,238,252,.92)';
+    ctx.font = `${Math.round(canvas.height*0.045)}px Arial`;
+    ctx.fillText(`Score: ${Math.floor(score)}`, 16, 42);
+    ctx.fillText(`Best: ${best}`, 16, 82);
+
+    if(!running && !gameOver){
+      ctx.textAlign = 'center';
+      ctx.font = `${Math.round(canvas.height*0.06)}px Arial`;
+      ctx.fillText('⏸ 已暂停（按空格继续）', canvas.width/2, canvas.height/2);
+    }
+
+    if(gameOver){
+      ctx.textAlign = 'center';
+      ctx.font = `${Math.round(canvas.height*0.075)}px Arial`;
+      ctx.fillText('💥 游戏结束', canvas.width/2, canvas.height*0.44);
+      ctx.font = `${Math.round(canvas.height*0.05)}px Arial`;
+      ctx.fillText(`最终分数：${Math.floor(score)}`, canvas.width/2, canvas.height*0.52);
+      ctx.font = `${Math.round(canvas.height*0.04)}px Arial`;
+      ctx.fillText('点“重新开始”再来一局', canvas.width/2, canvas.height*0.60);
+    }
+    ctx.restore();
+  }
+
+  // ---------- 更新逻辑 ----------
+  let last = performance.now();
+  let perfNow = last;
+
+  function update(dt){
+    // 分数按时间增长
+    score += dt * 10;
+
+    // 难度：刷怪越来越快（下限 0.25s）
+    spawnInterval = Math.max(0.25, 0.75 - score/400);
+
+    // 玩家速度
+    player.vx = 0;
+    if(keys.left) player.vx -= player.speed;
+    if(keys.right) player.vx += player.speed;
+    player.x += player.vx * dt;
+    player.x = clamp(player.x, player.r + 10, canvas.width - player.r - 10);
+
+    // 生成陨石
+    spawnTimer += dt;
+    while(spawnTimer >= spawnInterval){
+      spawnTimer -= spawnInterval;
+      spawnRock();
+    }
+
+    // 更新陨石
+    for(const rock of rocks){
+      rock.x += rock.vx * dt;
+      rock.y += rock.vy * dt;
+      rock.a += rock.spin * dt;
+    }
+
+    // 清理出界陨石
+    for(let i=rocks.length-1;i>=0;i--){
+      if(rocks[i].y - rocks[i].r > canvas.height + 40) rocks.splice(i,1);
+    }
+
+    // 碰撞检测：圆-圆碰撞
+    const pr2 = player.r * player.r;
+    for(const rock of rocks){
+      const rr = rock.r + player.r * 0.85;
+      if(dist2(player.x, player.y, rock.x, rock.y) <= rr*rr){
+        gameOver = true;
+        running = false;
+        best = Math.max(best, Math.floor(score));
+        localStorage.setItem('best_score', best);
+        break;
+      }
+    }
+  }
+
+  function render(){
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    drawBG();
+    for(const rock of rocks) drawRock(rock);
+    drawPlayer();
+    drawHUD();
+  }
+
+  function loop(now){
+    perfNow = now;
+    const dt = Math.min(0.033, (now - last) / 1000); // 防止切后台 dt 爆炸
+    last = now;
+
+    fitDPR();
+
+    if(running && !gameOver) update(dt);
+    render();
+
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+
+  // ---------- 控制 ----------
+  function togglePause(){
+    if(gameOver) return;
+    running = !running;
+  }
+  function restart(){
+    rocks.length = 0;
+    spawnTimer = 0;
+    score = 0;
+    gameOver = false;
+    running = true;
+    player.x = canvas.width/2;
+    player.y = canvas.height*0.84;
+  }
+
+  // 键盘
+  window.addEventListener('keydown', (e)=>{
+    if(e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') keys.left = true;
+    if(e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') keys.right = true;
+    if(e.key === ' ') { e.preventDefault(); togglePause(); }
+  });
+  window.addEventListener('keyup', (e)=>{
+    if(e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') keys.left = false;
+    if(e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') keys.right = false;
+  });
+
+  // 触控/鼠标拖动：让飞船跟着手指走（更直觉）
+  let dragging = false;
+  function pointerToX(evt){
+    const rect = canvas.getBoundingClientRect();
+    const clientX = evt.touches ? evt.touches[0].clientX : evt.clientX;
+    const ratio = canvas.width / rect.width;
+    return (clientX - rect.left) * ratio;
+  }
+  canvas.addEventListener('pointerdown', (e)=>{ dragging = true; player.x = pointerToX(e); });
+  canvas.addEventListener('pointermove', (e)=>{ if(dragging) player.x = pointerToX(e); });
+  window.addEventListener('pointerup', ()=> dragging = false);
+
+  // 按钮
+  document.getElementById('pause').addEventListener('click', togglePause);
+  document.getElementById('restart').addEventListener('click', restart);
+
+})();
+</script>
+</body>
+</html>
