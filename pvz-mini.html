@@ -1,0 +1,465 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1" />
+  <title>PVZ mini | 极简塔防</title>
+  <style>
+    body{
+      margin:0; height:100vh; display:grid; place-items:center;
+      background:#0b1020; color:#e9eefc;
+      font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,"PingFang SC","Microsoft YaHei",sans-serif;
+    }
+    .wrap{ width:min(980px, 95vw); }
+    .top{ display:flex; justify-content:space-between; align-items:baseline; gap:10px; margin:10px 0 10px; }
+    .title{ font-weight:800; letter-spacing:.3px; }
+    .hint{ opacity:.75; font-size:14px; line-height:1.4; text-align:right; }
+    canvas{
+      width:100%;
+      aspect-ratio: 16/9;
+      background: linear-gradient(180deg, #1c2a2b 0%, #122018 50%, #0e1a13 100%);
+      border-radius:16px;
+      box-shadow: 0 18px 60px rgba(0,0,0,.55);
+      touch-action:none;
+    }
+    .bar{ display:flex; gap:10px; flex-wrap:wrap; margin-top:12px; align-items:center; }
+    button{
+      border:0; border-radius:12px; padding:10px 12px;
+      background:#e9eefc; color:#0b1020; font-weight:800; cursor:pointer;
+    }
+    button:hover{ filter:brightness(.95); }
+    a{ color:#9cc0ff; text-decoration:none; font-weight:800; }
+    a:hover{ text-decoration:underline; }
+    .pill{
+      padding:8px 10px; border:1px solid rgba(233,238,252,.25);
+      border-radius:999px; font-size:14px; opacity:.95;
+      background: rgba(0,0,0,.18);
+    }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <div>
+      <div class="title">🌱 PVZ mini：极简塔防（Canvas）</div>
+      <div class="pill" id="status">加载中…</div>
+    </div>
+    <div class="hint">
+      点击格子种豌豆射手（50 阳光）<br>
+      空格暂停｜R 重开｜僵尸到左边就输了
+    </div>
+  </div>
+
+  <canvas id="c" width="960" height="540"></canvas>
+
+  <div class="bar">
+    <button id="restart">重新开始</button>
+    <button id="pause">暂停/继续</button>
+    <a href="index.html">← 回主页</a>
+  </div>
+</div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  const statusEl = document.getElementById('status');
+
+  // ===== 基本参数（你想改难度就改这里）=====
+  const LANES = 5;               // 行数
+  const COLS  = 9;               // 列数
+  const PLANT_COST = 50;         // 植物花费
+  const START_SUN = 100;         // 初始阳光
+  const SUN_PER_SEC = 12;        // 阳光自动增长（每秒）
+  const BULLET_DMG = 20;         // 子弹伤害
+  const PLANT_FIRE_CD = 0.65;    // 射速（秒）
+  const ZOMBIE_BASE_HP = 80;     // 基础血量
+  const ZOMBIE_BASE_SPD = 26;    // 基础速度（像素/秒）
+  const SPAWN_BASE = 2.2;        // 初始刷怪间隔（秒）
+  const SPAWN_MIN  = 0.75;       // 最快刷怪间隔（秒）
+  const DIFF_RAMP  = 0.006;      // 难度增长（越大越快）
+
+  // ===== DPR 适配（让画面清晰）=====
+  function fitDPR(){
+    const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+    const rect = canvas.getBoundingClientRect();
+    const w = Math.round(rect.width * dpr);
+    const h = Math.round(rect.height * dpr);
+    if(canvas.width !== w || canvas.height !== h){
+      canvas.width = w;
+      canvas.height = h;
+    }
+  }
+
+  // ===== 游戏状态 =====
+  let running = true;
+  let gameOver = false;
+
+  let sun = START_SUN;
+  let timeAlive = 0;        // 存活时间（用于难度曲线）
+  let score = 0;            // 纯计分：按击杀数+存活时间
+  let kills = 0;
+
+  // 网格：存放植物（只做 1 种：豌豆射手）
+  const grid = Array.from({length: LANES}, () => Array(COLS).fill(null));
+  // 实体列表
+  const plants = [];
+  const zombies = [];
+  const bullets = [];
+
+  // 坐标换算
+  function cellW(){ return canvas.width / COLS; }
+  function laneH(){ return canvas.height / LANES; }
+
+  // ===== 生成实体 =====
+  function addPlant(lane, col){
+    if(gameOver) return;
+    if(lane < 0 || lane >= LANES || col < 0 || col >= COLS) return;
+    if(grid[lane][col]) return;
+    if(sun < PLANT_COST) return;
+
+    sun -= PLANT_COST;
+
+    const x = (col + 0.5) * cellW();
+    const y = (lane + 0.5) * laneH();
+    const p = {
+      lane, col, x, y,
+      fireCD: 0,
+      hp: 9999
+    };
+    grid[lane][col] = p;
+    plants.push(p);
+  }
+
+  function spawnZombie(){
+    const lane = Math.floor(Math.random() * LANES);
+    const y = (lane + 0.5) * laneH();
+
+    // 难度随时间上升：血量、速度轻微上升
+    const hp = ZOMBIE_BASE_HP + Math.floor(timeAlive * 4);
+    const spd = ZOMBIE_BASE_SPD + timeAlive * 0.7;
+
+    zombies.push({
+      lane,
+      x: canvas.width + 30,
+      y,
+      r: Math.min(laneH()*0.32, 22),
+      hp,
+      maxHp: hp,
+      spd
+    });
+  }
+
+  function shootFrom(plant){
+    // 只向右射击
+    bullets.push({
+      lane: plant.lane,
+      x: plant.x + 16,
+      y: plant.y,
+      vx: 420,
+      r: 5,
+      dmg: BULLET_DMG
+    });
+  }
+
+  // ===== 输入：点击/触控种植 =====
+  function canvasToCell(evt){
+    const rect = canvas.getBoundingClientRect();
+    const clientX = evt.touches ? evt.touches[0].clientX : evt.clientX;
+    const clientY = evt.touches ? evt.touches[0].clientY : evt.clientY;
+    const sx = (clientX - rect.left) / rect.width  * canvas.width;
+    const sy = (clientY - rect.top)  / rect.height * canvas.height;
+    const col = Math.floor(sx / cellW());
+    const lane = Math.floor(sy / laneH());
+    return {lane, col};
+  }
+
+  let pointerDown = false;
+  canvas.addEventListener('pointerdown', (e)=>{
+    pointerDown = true;
+    const {lane, col} = canvasToCell(e);
+    addPlant(lane, col);
+  });
+  canvas.addEventListener('pointerup', ()=> pointerDown = false);
+
+  // ===== 控制：暂停/重开 =====
+  function togglePause(){
+    if(gameOver) return;
+    running = !running;
+  }
+  function restart(){
+    // 清空
+    for(let r=0;r<LANES;r++) for(let c=0;c<COLS;c++) grid[r][c]=null;
+    plants.length = 0;
+    zombies.length = 0;
+    bullets.length = 0;
+
+    running = true;
+    gameOver = false;
+
+    sun = START_SUN;
+    timeAlive = 0;
+    score = 0;
+    kills = 0;
+
+    spawnTimer = 0;
+  }
+
+  window.addEventListener('keydown', (e)=>{
+    if(e.key === ' ') { e.preventDefault(); togglePause(); }
+    if(e.key === 'r' || e.key === 'R') restart();
+  });
+  document.getElementById('pause').addEventListener('click', togglePause);
+  document.getElementById('restart').addEventListener('click', restart);
+
+  // ===== 游戏循环 =====
+  let last = performance.now();
+  let spawnTimer = 0;
+
+  function update(dt){
+    timeAlive += dt;
+
+    // 阳光自动增长
+    sun += SUN_PER_SEC * dt;
+
+    // 刷怪：随着存活时间变快
+    const spawnInterval = Math.max(SPAWN_MIN, SPAWN_BASE - timeAlive * DIFF_RAMP);
+    spawnTimer += dt;
+    while(spawnTimer >= spawnInterval){
+      spawnTimer -= spawnInterval;
+      spawnZombie();
+    }
+
+    // 植物开火：若该行存在僵尸且在植物右侧，就射击
+    for(const p of plants){
+      p.fireCD -= dt;
+      if(p.fireCD <= 0){
+        const hasTarget = zombies.some(z => z.lane === p.lane && z.x > p.x);
+        if(hasTarget){
+          shootFrom(p);
+          p.fireCD = PLANT_FIRE_CD;
+        } else {
+          // 没目标就稍微慢一点检查
+          p.fireCD = Math.min(0.25, PLANT_FIRE_CD);
+        }
+      }
+    }
+
+    // 子弹移动 & 碰撞
+    for(const b of bullets){
+      b.x += b.vx * dt;
+    }
+
+    // 子弹碰撞（同一行，圆碰撞）
+    for(let i=bullets.length-1;i>=0;i--){
+      const b = bullets[i];
+      let hit = false;
+      for(const z of zombies){
+        if(z.lane !== b.lane) continue;
+        const dx = z.x - b.x;
+        const dy = z.y - b.y;
+        const rr = z.r + b.r;
+        if(dx*dx + dy*dy <= rr*rr){
+          z.hp -= b.dmg;
+          hit = true;
+          break;
+        }
+      }
+      if(hit || b.x > canvas.width + 40){
+        bullets.splice(i,1);
+      }
+    }
+
+    // 僵尸移动：向左；如果走到最左边 => 输
+    for(const z of zombies){
+      z.x -= z.spd * dt;
+      if(z.x - z.r < 0){
+        gameOver = true;
+        running = false;
+      }
+    }
+
+    // 清理死亡僵尸
+    for(let i=zombies.length-1;i>=0;i--){
+      if(zombies[i].hp <= 0){
+        zombies.splice(i,1);
+        kills += 1;
+        // 击杀奖励阳光（让玩家有反馈）
+        sun += 18;
+      }
+    }
+
+    // 计分：存活时间 + 击杀
+    score = Math.floor(timeAlive * 10 + kills * 50);
+  }
+
+  // ===== 渲染 =====
+  function drawGrid(){
+    const cw = cellW(), lh = laneH();
+    ctx.save();
+    ctx.globalAlpha = 0.25;
+    ctx.strokeStyle = '#e9eefc';
+    ctx.lineWidth = 2;
+    for(let c=1;c<COLS;c++){
+      const x = c*cw;
+      ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,canvas.height); ctx.stroke();
+    }
+    for(let r=1;r<LANES;r++){
+      const y = r*lh;
+      ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(canvas.width,y); ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function drawPlants(){
+    for(const p of plants){
+      // 豌豆射手：绿圆+炮口
+      ctx.save();
+      ctx.translate(p.x, p.y);
+
+      ctx.fillStyle = '#9ef08f';
+      ctx.beginPath();
+      ctx.arc(0, 0, Math.min(laneH()*0.28, 20), 0, Math.PI*2);
+      ctx.fill();
+
+      ctx.fillStyle = '#2b5b2c';
+      ctx.beginPath();
+      ctx.arc(7, -3, 6, 0, Math.PI*2);
+      ctx.fill();
+
+      // 小叶子
+      ctx.fillStyle = '#4ad06b';
+      ctx.beginPath();
+      ctx.ellipse(-10, 10, 10, 5, -0.6, 0, Math.PI*2);
+      ctx.fill();
+
+      ctx.restore();
+    }
+  }
+
+  function drawZombies(){
+    for(const z of zombies){
+      ctx.save();
+      ctx.translate(z.x, z.y);
+
+      // 身体
+      ctx.fillStyle = '#b9f2b6';
+      ctx.beginPath();
+      ctx.roundRect(-z.r, -z.r, z.r*2, z.r*2, 8);
+      ctx.fill();
+
+      // 眼睛
+      ctx.fillStyle = '#0b1020';
+      ctx.beginPath(); ctx.arc(-6, -4, 2.5, 0, Math.PI*2); ctx.fill();
+      ctx.beginPath(); ctx.arc( 2, -4, 2.5, 0, Math.PI*2); ctx.fill();
+
+      // 血条
+      const w = z.r*2;
+      const hpRate = Math.max(0, z.hp / z.maxHp);
+      ctx.globalAlpha = 0.85;
+      ctx.fillStyle = 'rgba(0,0,0,.35)';
+      ctx.fillRect(-z.r, -z.r-10, w, 6);
+      ctx.fillStyle = '#ff7b7b';
+      ctx.fillRect(-z.r, -z.r-10, w*hpRate, 6);
+
+      ctx.restore();
+    }
+  }
+
+  function drawBullets(){
+    for(const b of bullets){
+      ctx.save();
+      ctx.fillStyle = '#f6ff83';
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, b.r, 0, Math.PI*2);
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  function drawHUD(){
+    ctx.save();
+    ctx.fillStyle = 'rgba(233,238,252,.92)';
+    ctx.font = `${Math.round(canvas.height*0.045)}px Arial`;
+    ctx.fillText(`☀ 阳光: ${Math.floor(sun)}`, 14, 40);
+    ctx.fillText(`☠ 击杀: ${kills}`, 14, 80);
+    ctx.fillText(`★ 分数: ${score}`, 14, 120);
+
+    ctx.textAlign = 'right';
+    ctx.fillText(`种植花费: ${PLANT_COST}`, canvas.width - 14, 40);
+
+    if(!running && !gameOver){
+      ctx.textAlign = 'center';
+      ctx.font = `${Math.round(canvas.height*0.065)}px Arial`;
+      ctx.fillText('⏸ 已暂停（空格继续）', canvas.width/2, canvas.height/2);
+    }
+    if(gameOver){
+      ctx.textAlign = 'center';
+      ctx.font = `${Math.round(canvas.height*0.08)}px Arial`;
+      ctx.fillText('💀 僵尸突破防线！', canvas.width/2, canvas.height*0.42);
+      ctx.font = `${Math.round(canvas.height*0.05)}px Arial`;
+      ctx.fillText(`分数：${score}  ｜击杀：${kills}`, canvas.width/2, canvas.height*0.52);
+      ctx.font = `${Math.round(canvas.height*0.04)}px Arial`;
+      ctx.fillText('按 R 或点“重新开始”再来一局', canvas.width/2, canvas.height*0.60);
+    }
+    ctx.restore();
+
+    // 顶部状态条
+    statusEl.textContent = gameOver ? '状态：结束' : (running ? '状态：进行中' : '状态：暂停');
+  }
+
+  function render(){
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+
+    // 草地一点层次
+    ctx.save();
+    ctx.globalAlpha = 0.25;
+    ctx.fillStyle = '#2d5c33';
+    ctx.fillRect(0, canvas.height*0.55, canvas.width, canvas.height*0.45);
+    ctx.restore();
+
+    drawGrid();
+    drawPlants();
+    drawZombies();
+    drawBullets();
+    drawHUD();
+  }
+
+  // ===== 主循环 =====
+  function loop(now){
+    fitDPR();
+    const dt = Math.min(0.033, (now - last) / 1000);
+    last = now;
+
+    if(running && !gameOver) update(dt);
+    render();
+
+    requestAnimationFrame(loop);
+  }
+
+  // roundRect 兼容（部分老浏览器）
+  if(!CanvasRenderingContext2D.prototype.roundRect){
+    CanvasRenderingContext2D.prototype.roundRect = function(x,y,w,h,r){
+      r = Math.min(r, w/2, h/2);
+      this.beginPath();
+      this.moveTo(x+r, y);
+      this.arcTo(x+w, y,   x+w, y+h, r);
+      this.arcTo(x+w, y+h, x,   y+h, r);
+      this.arcTo(x,   y+h, x,   y,   r);
+      this.arcTo(x,   y,   x+w, y,   r);
+      this.closePath();
+      return this;
+    }
+  }
+
+  // 启动
+  requestAnimationFrame(() => {
+    fitDPR();
+    statusEl.textContent = '状态：进行中';
+    requestAnimationFrame(loop);
+  });
+
+})();
+</script>
+</body>
+</html>
